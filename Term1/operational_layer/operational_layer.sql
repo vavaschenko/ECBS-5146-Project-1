@@ -3,8 +3,8 @@ CREATE SCHEMA IF NOT EXISTS credit;
 USE credit;
 
 # Data was added to the schema by running the SQL scripts attached in the raw_data folder of the repository
--- ALTER TABLE member
--- DROP COLUMN photograph;
+ALTER TABLE member
+DROP COLUMN photograph;
 DELETE FROM charge WHERE charge_no > 100000; #this is to eschew memory issues
 
 # Creating stored procedures 
