@@ -3,9 +3,9 @@ CREATE SCHEMA IF NOT EXISTS credit;
 USE credit;
 
 # Data was added to the schema by running the SQL scripts attached in the raw_data folder of the repository
-#ALTER TABLE member
-#DROP COLUMN photograph;
-delete from charge where charge_no > 100000; #this is to eschew memory issues
+-- ALTER TABLE member
+-- DROP COLUMN photograph;
+DELETE FROM charge WHERE charge_no > 100000; #this is to eschew memory issues
 
 # Creating stored procedures 
 DELIMITER //
@@ -156,32 +156,6 @@ BEGIN
     WHERE member_no = p_member_no;
 END //
 
-# Add trigger
--- DROP TRIGGER IF EXISTS check_data_on_insert;
--- CREATE TRIGGER before_member_delete
--- BEFORE DELETE ON member
--- FOR EACH ROW
--- BEGIN
---     DECLARE outstanding_charges INT;
---     DECLARE unpaid_statements INT;
-
---     #Check for outstanding charges
---     SELECT COUNT(*) INTO outstanding_charges
---     FROM charge
---     WHERE member_no = OLD.member_no AND statement_no IS NULL;
-
---     #Check for unpaid statements
---     SELECT COUNT(*) INTO unpaid_statements
---     FROM statement
---     WHERE member_no = OLD.member_no AND due_dt > NOW();
-
---     #Prevent deletion if there are outstanding charges or unpaid statements
---     IF outstanding_charges > 0 OR unpaid_statements > 0 THEN
---         SIGNAL SQLSTATE '45000'
---         SET MESSAGE_TEXT = 'Cannot delete member with outstanding charges or unpaid statements';
---     END IF;
--- END //
-
 DROP PROCEDURE IF EXISTS DataConsistencyCheck;
 CREATE PROCEDURE DataConsistencyCheck()
 BEGIN
@@ -264,6 +238,18 @@ BEGIN
     END IF;
 END //
 
+DROP TRIGGER IF EXISTS BeforePaymentInsert;
+CREATE TRIGGER BeforePaymentInsert
+BEFORE INSERT ON payment
+FOR EACH ROW
+BEGIN
+    #Check if the member exists
+    IF (SELECT COUNT(*) FROM member WHERE member_no = NEW.member_no) = 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Cannot insert payment: member does not exist !';
+    END IF;
+END //
+
 DELIMITER ;
 
 # Now we can test these procedures and add some more relevant data to the database
@@ -276,6 +262,9 @@ CALL AddNewMember(10001, 'Vashchenko', 'Vasilisa', 'A', 'Street', 'City', 'PR',
 CALL ChargeMemberAccount(2000001, 10001, 28, 7, 2000.37, current_timestamp(), '01', 20001);
 
 # Now let's make the payment to close the outstanding balance
-CALL ProcessPayment(15555, 10001, 2000.37, current_timestamp(), '01', 20001);
+CALL ProcessPayment(15556, 10001, 2000.37, current_timestamp(), '01', 20001);
+
+# But if I try to make a Payment for a non-existent customer, the trigger throws a custom validity-check error
+CALL ProcessPayment(15556, 10002, 2000.37, current_timestamp(), '01', 20001);
 
 CALL DataConsistencyCheck(); #9114 inconsistencies found because I am working with a wonderfully curated dataset :)

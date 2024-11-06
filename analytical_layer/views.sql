@@ -2,8 +2,6 @@ USE credit;
 
 SET GLOBAL event_scheduler = ON;
 
-delete from charge where charge_no > 100000;
-
 #Adding a denormalized structure
 DELIMITER //
 DROP PROCEDURE IF EXISTS UpdateDenormalizedPaymentInfo;
@@ -131,7 +129,7 @@ CREATE EVENT IF NOT EXISTS hourly_update_denormalized_payment_info
 ON SCHEDULE EVERY 1 DAY
 DO
 BEGIN
-    CALL UpdateDenormalizedPaymentInfo(); #this is a heavy weight operation so 
+    CALL UpdateDenormalizedPaymentInfo();
 END //
 DELIMITER ;
 
@@ -162,38 +160,6 @@ LEFT JOIN (
 	) AS prev ON c.member_no = prev.member_no
 GROUP BY member_no;
 
-CREATE OR REPLACE VIEW member_balance_snapshot AS
-SELECT 
-		m.member_no,
-		m.lastname,
-		m.firstname,
-		m.curr_balance,
-		COALESCE(SUM(c.charge_amt), 0) AS outstanding_charges,
-		MAX(c.charge_dt) AS last_charge_dt,
-		MAX(p.payment_dt) AS last_payment_dt,
-		#Current month charge count and amount
-		COUNT(c.charge_no) AS current_month_charge_count,
-		COALESCE(SUM(c.charge_amt), 0) AS current_month_charge_amt,
-		#Previous month charge count and amount
-		COALESCE(prev.charge_count, 0) AS prev_month_charge_count,
-		COALESCE(prev.charge_amt, 0) AS prev_month_charge_amt,
-		#Change in charge count and amount from previous month to current month
-		COUNT(c.charge_no) - prev.charge_count AS charge_count_change,
-		(SUM(c.charge_amt) - prev.charge_amt)/prev.charge_amt AS charge_amt_change
-	FROM member m
-	LEFT JOIN charge c ON m.member_no = c.member_no AND DATE_FORMAT(c.charge_dt, '%Y-%m') = DATE_FORMAT(NOW(), '%Y-%m') # Filter for current month
-	LEFT JOIN payment p ON m.member_no = p.member_no
-	#Subquery to calculate previous month’s charge count and amount
-	LEFT JOIN (
-		SELECT 
-			member_no,
-			COUNT(charge_no) AS charge_count,
-			SUM(charge_amt) AS charge_amt
-		FROM charge
-		WHERE DATE_FORMAT(charge_dt, '%Y-%m') = DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 1 MONTH), '%Y-%m')
-		GROUP BY member_no
-	) AS prev ON m.member_no = prev.member_no
-	GROUP BY m.member_no;
 
 CREATE OR REPLACE VIEW category_analysis AS
 SELECT 
