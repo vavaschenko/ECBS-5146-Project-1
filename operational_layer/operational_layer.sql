@@ -3,60 +3,35 @@ CREATE SCHEMA IF NOT EXISTS credit;
 USE credit;
 
 # Data was added to the schema by running the SQL scripts attached in the raw_data folder of the repository
-
-# Creating basic views for the operational data layer 
-CREATE OR REPLACE VIEW member_profile AS
-SELECT 
-    m.member_no,
-    m.lastname,
-    m.firstname,
-    m.curr_balance,
-    c.corp_name,
-    r.region_no,
-    r.region_name,
-    r.country,
-    r.state_prov
-FROM member m
-LEFT JOIN corporation c ON m.corp_no = c.corp_no
-LEFT JOIN region r ON m.region_no = r.region_no;
-
-CREATE OR REPLACE VIEW payment_charge_history AS
-SELECT 
-    m.member_no,
-    m.lastname,
-    m.firstname,
-    p.payment_no,
-    p.payment_amt,
-    p.payment_dt,
-    c.charge_no,
-    c.charge_amt,
-    c.charge_dt
-FROM member m
-LEFT JOIN payment p ON m.member_no = p.member_no
-LEFT JOIN charge c ON m.member_no = c.member_no
-ORDER BY m.member_no, p.payment_dt, c.charge_dt;
+#ALTER TABLE member
+#DROP COLUMN photograph;
+delete from charge where charge_no > 100000; #this is to eschew memory issues
 
 # Creating stored procedures 
 DELIMITER //
 
+DROP PROCEDURE IF EXISTS AddNewMember;
 CREATE PROCEDURE AddNewMember (
-    IN p_lastname VARCHAR(255),
-    IN p_firstname VARCHAR(255),
+    IN p_member_no INT,
+    IN p_lastname VARCHAR(15),
+    IN p_firstname VARCHAR(15),
     IN p_middleinitial CHAR(1),
-    IN p_street VARCHAR(255),
-    IN p_city VARCHAR(100),
+    IN p_street VARCHAR(15),
+    IN p_city VARCHAR(15),
     IN p_state_prov CHAR(2),
     IN p_country CHAR(2),
     IN p_mail_code CHAR(10),
-    IN p_phone_no CHAR(15),
+    IN p_phone_no CHAR(13),
     IN p_corp_no INT,
     IN p_region_no INT,
     IN p_issue_dt DATETIME,
     IN p_expr_dt DATETIME,
-    IN p_member_code CHAR(10)
+    IN p_prev_balance INT,
+    IN p_curr_balance INT,
+    IN p_member_code CHAR(2)
 )
 BEGIN
-    -- Validates that the corporation and region exist
+    #Validates that the corporation and region exist
     IF NOT EXISTS (SELECT 1 FROM corporation WHERE corp_no = p_corp_no) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Corporation does not exist';
     END IF;
@@ -65,35 +40,39 @@ BEGIN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Region does not exist';
     END IF;
 
-    -- Inserts the new member
-    INSERT INTO member (lastname, firstname, middleinitial, street, city, state_prov, country, mail_code, phone_no, corp_no, region_no, issue_dt, expr_dt, member_code)
-    VALUES (p_lastname, p_firstname, p_middleinitial, p_street, p_city, p_state_prov, p_country, p_mail_code, p_phone_no, p_corp_no, p_region_no, p_issue_dt, p_expr_dt, p_member_code);
+    #Inserts the new member
+    INSERT INTO member (member_no, lastname, firstname, middleinitial, street, city, state_prov, country, mail_code, phone_no, corp_no, region_no, issue_dt, expr_dt, member_code)
+    VALUES (p_member_no, p_lastname, p_firstname, p_middleinitial, p_street, p_city, p_state_prov, p_country, p_mail_code, p_phone_no, p_corp_no, p_region_no, p_issue_dt, p_expr_dt, p_member_code);
 END //
 
+DROP PROCEDURE IF EXISTS ProcessPayment;
 CREATE PROCEDURE ProcessPayment (
+    IN p_payment_no INT,
     IN p_member_no INT,
-    IN p_payment_amt DECIMAL(10, 2),
+    IN p_payment_amt DECIMAL(19, 4),
     IN p_payment_dt DATETIME,
-    IN p_payment_code CHAR(10)
+    IN p_payment_code CHAR(2),
+    IN p_statement_no INT
 )
 BEGIN
-    -- Inserts the payment record
-    INSERT INTO payment (member_no, payment_amt, payment_dt, payment_code)
-    VALUES (p_member_no, p_payment_amt, p_payment_dt, p_payment_code);
+    #Inserts the payment record
+    INSERT INTO payment (payment_no, member_no, payment_amt, payment_dt, payment_code, statement_no)
+    VALUES (p_payment_no, p_member_no, p_payment_amt, p_payment_dt, p_payment_code, p_statement_no);
 
-    -- Updates the member's current balance
+    #Updates the member's current balance
     UPDATE member
     SET curr_balance = curr_balance - p_payment_amt
     WHERE member_no = p_member_no;
 END //
 
+DROP PROCEDURE IF EXISTS GenerateMonthlyStatements;
 CREATE PROCEDURE GenerateMonthlyStatements (IN p_statement_dt DATE)
 BEGIN
     DECLARE done INT DEFAULT FALSE;
     DECLARE v_member_no INT;
     DECLARE v_statement_amt DECIMAL(10, 2);
 
-    -- Declare a cursor to iterate through all members
+    #Declare a cursor to iterate through all members
     DECLARE member_cursor CURSOR FOR
         SELECT member_no
         FROM member;
@@ -107,15 +86,15 @@ BEGIN
             LEAVE member_loop;
         END IF;
 
-        -- Calculates statement amount as the sum of unpaid charges
+		#Calculates statement amount as the sum of unpaid charges
         SET v_statement_amt = (SELECT COALESCE(SUM(charge_amt), 0) FROM charge WHERE member_no = v_member_no AND statement_no IS NULL);
 
-        -- Inserts the statement record
+        #Inserts the statement record
         IF v_statement_amt > 0 THEN
             INSERT INTO statement (member_no, statement_dt, due_dt, statement_amt, statement_code)
             VALUES (v_member_no, p_statement_dt, DATE_ADD(p_statement_dt, INTERVAL 30 DAY), v_statement_amt, 'MTH');
 
-            -- Updates charges to link them to the newly created statement
+            #Updates charges to link them to the newly created statement
             UPDATE charge
             SET statement_no = LAST_INSERT_ID()
             WHERE member_no = v_member_no AND statement_no IS NULL;
@@ -125,16 +104,19 @@ BEGIN
     CLOSE member_cursor;
 END //
 
+DROP PROCEDURE IF EXISTS ChargeMemberAccount;
 CREATE PROCEDURE ChargeMemberAccount (
+    IN p_charge_no INT,
     IN p_member_no INT,
     IN p_provider_no INT,
     IN p_category_no INT,
     IN p_charge_amt DECIMAL(10, 2),
     IN p_charge_dt DATETIME,
-    IN p_charge_code CHAR(10)
+    IN p_charge_code CHAR(2),
+    IN p_statement_no INT
 )
 BEGIN
-    -- Validate that the provider and category exist
+    #Validate that the provider and category exist
     IF NOT EXISTS (SELECT 1 FROM provider WHERE provider_no = p_provider_no) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Provider does not exist';
     END IF;
@@ -143,11 +125,11 @@ BEGIN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Category does not exist';
     END IF;
 
-    -- Insert the charge record
-    INSERT INTO charge (member_no, provider_no, category_no, charge_amt, charge_dt, charge_code)
-    VALUES (p_member_no, p_provider_no, p_category_no, p_charge_amt, p_charge_dt, p_charge_code);
+    #Insert the charge record
+    INSERT INTO charge (charge_no, member_no, provider_no, category_no, charge_amt, charge_dt, charge_code, statement_no)
+    VALUES (p_charge_no, p_member_no, p_provider_no, p_category_no, p_charge_amt, p_charge_dt, p_charge_code, p_statement_no);
 
-    -- Update the member's current balance
+    #Update the member's current balance
     UPDATE member
     SET curr_balance = curr_balance + p_charge_amt
     WHERE member_no = p_member_no;
@@ -174,38 +156,38 @@ BEGIN
     WHERE member_no = p_member_no;
 END //
 
-DELIMITER //
 # Add trigger
-DROP TRIGGER IF EXISTS before_member_delete;
-CREATE TRIGGER before_member_delete
-BEFORE DELETE ON member
-FOR EACH ROW
-BEGIN
-    DECLARE outstanding_charges INT;
-    DECLARE unpaid_statements INT;
+-- DROP TRIGGER IF EXISTS check_data_on_insert;
+-- CREATE TRIGGER before_member_delete
+-- BEFORE DELETE ON member
+-- FOR EACH ROW
+-- BEGIN
+--     DECLARE outstanding_charges INT;
+--     DECLARE unpaid_statements INT;
 
-    -- Check for outstanding charges
-    SELECT COUNT(*) INTO outstanding_charges
-    FROM charge
-    WHERE member_no = OLD.member_no AND statement_no IS NULL;
+--     #Check for outstanding charges
+--     SELECT COUNT(*) INTO outstanding_charges
+--     FROM charge
+--     WHERE member_no = OLD.member_no AND statement_no IS NULL;
 
-    -- Check for unpaid statements
-    SELECT COUNT(*) INTO unpaid_statements
-    FROM statement
-    WHERE member_no = OLD.member_no AND due_dt > NOW();
+--     #Check for unpaid statements
+--     SELECT COUNT(*) INTO unpaid_statements
+--     FROM statement
+--     WHERE member_no = OLD.member_no AND due_dt > NOW();
 
-    -- Prevent deletion if there are outstanding charges or unpaid statements
-    IF outstanding_charges > 0 OR unpaid_statements > 0 THEN
-        SIGNAL SQLSTATE '45000'
-        SET MESSAGE_TEXT = 'Cannot delete member with outstanding charges or unpaid statements';
-    END IF;
-END //
+--     #Prevent deletion if there are outstanding charges or unpaid statements
+--     IF outstanding_charges > 0 OR unpaid_statements > 0 THEN
+--         SIGNAL SQLSTATE '45000'
+--         SET MESSAGE_TEXT = 'Cannot delete member with outstanding charges or unpaid statements';
+--     END IF;
+-- END //
 
-CREATE PROCEDURE DataConsistencyCheck ()
+DROP PROCEDURE IF EXISTS DataConsistencyCheck;
+CREATE PROCEDURE DataConsistencyCheck()
 BEGIN
     DECLARE total_inconsistencies INT DEFAULT 0;
 
-    -- 1. Check Member Balance Consistency
+    #1. Check Member Balance Consistency
     DECLARE balance_inconsistencies INT;
 	DECLARE orphaned_charges INT;
     DECLARE orphaned_payments INT;
@@ -232,7 +214,7 @@ BEGIN
         SELECT 'No balance inconsistencies found.' AS Message;
     END IF;
 
-    -- 2. Check for Orphaned Records in Charge Table
+    #2. Check for Orphaned Records in Charge Table
 
     SELECT COUNT(*) INTO orphaned_charges
     FROM charge c
@@ -246,7 +228,7 @@ BEGIN
         SELECT 'No orphaned records found in charge table.' AS Message;
     END IF;
 
-    -- 3. Check for Orphaned Records in Payment Table
+    #3. Check for Orphaned Records in Payment Table
 
     SELECT COUNT(*) INTO orphaned_payments
     FROM payment p
@@ -260,7 +242,7 @@ BEGIN
         SELECT 'No orphaned records found in payment table.' AS Message;
     END IF;
 
-    -- 4. Check for Orphaned Records in Statement Table
+    #4. Check for Orphaned Records in Statement Table
 
     SELECT COUNT(*) INTO orphaned_statements
     FROM statement s
@@ -274,7 +256,7 @@ BEGIN
         SELECT 'No orphaned records found in statement table.' AS Message;
     END IF;
 
-    -- Final Summary
+    #Final Summary
     IF total_inconsistencies = 0 THEN
         SELECT 'Data consistency check completed successfully. No inconsistencies found.' AS Message;
     ELSE
@@ -287,4 +269,13 @@ DELIMITER ;
 # Now we can test these procedures and add some more relevant data to the database
 # Let's create a user 
 
-select * from statement;
+CALL AddNewMember(10001, 'Vashchenko', 'Vasilisa', 'A', 'Street', 'City', 'PR', 
+					'RU', '0123456789', '+7 1234567889', 1, 1, '2024-11-02', '2024-11-02', 0, 0, '01');
+    
+# Now make a charge on this account
+CALL ChargeMemberAccount(2000001, 10001, 28, 7, 2000.37, current_timestamp(), '01', 20001);
+
+# Now let's make the payment to close the outstanding balance
+CALL ProcessPayment(15555, 10001, 2000.37, current_timestamp(), '01', 20001);
+
+CALL DataConsistencyCheck(); #9114 inconsistencies found because I am working with a wonderfully curated dataset :)
